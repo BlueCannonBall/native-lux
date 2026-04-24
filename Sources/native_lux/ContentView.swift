@@ -118,11 +118,12 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
     var lockedAt: Date?
     
     var isReadyForPointerLock = false
+    var isClientSideMouse = false
+    var storedMouseSensitivity: CGFloat = 1.5
     
-    var accumMoveX: CGFloat = 0
-    var accumMoveY: CGFloat = 0
-    var accumWheelX: CGFloat = 0
-    var accumWheelY: CGFloat = 0
+    var cursorView: UIImageView?
+    var virtualMouseX: CGFloat = 0
+    var virtualMouseY: CGFloat = 0
     
     var displayLink: CADisplayLink?
     
@@ -169,6 +170,26 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
         }
         
         webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+        
+        // Native cursor overlay — renders on top of WKWebView with zero IPC latency
+        if let mouseURL = Bundle.module.url(forResource: "mouse", withExtension: "png", subdirectory: "lux"),
+           let mouseData = try? Data(contentsOf: mouseURL),
+           let mouseImage = UIImage(data: mouseData) {
+            let scale: CGFloat = 40.0
+            let cursorSize = CGSize(width: mouseImage.size.width / scale, height: mouseImage.size.height / scale)
+            let imageView = UIImageView(image: mouseImage)
+            imageView.frame = CGRect(origin: .zero, size: cursorSize)
+            imageView.isHidden = true
+            imageView.isUserInteractionEnabled = false
+            imageView.layer.shadowColor = UIColor.black.cgColor
+            imageView.layer.shadowOpacity = 0.3
+            imageView.layer.shadowOffset = CGSize(width: 1.5, height: 1.5)
+            imageView.layer.shadowRadius = 2.5
+            // Pre-compute shadow path to avoid expensive per-frame recalculation
+            imageView.layer.shadowPath = UIBezierPath(rect: CGRect(origin: .zero, size: cursorSize)).cgPath
+            view.addSubview(imageView)
+            self.cursorView = imageView
+        }
         
         // 1. Scroll tracking via explicit UIKit Pan (since GCMouse misses iPadOS trackpad scrolls)
         if #available(iOS 13.4, *) {
@@ -244,37 +265,17 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
             let translation = gesture.translation(in: view)
             gesture.setTranslation(.zero, in: view)
             
-            accumWheelX += -translation.x
-            accumWheelY += -translation.y
+            let dx = -translation.x
+            let dy = -translation.y
+            if dx != 0 || dy != 0 {
+                let js = "if (window.nativeWheel) { window.nativeWheel(\(dx), \(dy)); }"
+                webView.evaluateJavaScript(js, completionHandler: nil)
+            }
         }
     }
     
     @objc func displayLinkFired() {
         guard isPointerLocked else { return }
-        
-        let ix = trunc(accumMoveX)
-        let iy = trunc(accumMoveY)
-        
-        let sx = trunc(accumWheelX)
-        let sy = trunc(accumWheelY)
-        
-        var js = ""
-        
-        if ix != 0 || iy != 0 {
-            accumMoveX -= ix
-            accumMoveY -= iy
-            js += "if (window.nativeMouseMove) { window.nativeMouseMove(\(ix), \(iy)); }"
-        }
-        
-        if sx != 0 || sy != 0 {
-            accumWheelX -= sx
-            accumWheelY -= sy
-            js += "if (window.nativeWheel) { window.nativeWheel(\(sx), \(sy)); }"
-        }
-        
-        if !js.isEmpty {
-            webView.evaluateJavaScript(js, completionHandler: nil)
-        }
         
         if #available(iOS 14.0, *) {
             var isAnySceneLocked = false
@@ -329,10 +330,28 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
         mouseInput.mouseMovedHandler = { [weak self] (input: GCMouseInput, deltaX: Float, deltaY: Float) in
             guard let self = self, self.isPointerLocked else { return }
             
-            // Float accumulation avoids fractional hardware trackpad movement wipeout.
+            // Update native cursor overlay immediately (zero latency)
+            if self.isClientSideMouse, let cursorView = self.cursorView {
+                let dx = CGFloat(deltaX) * self.storedMouseSensitivity
+                let dy = CGFloat(-deltaY) * self.storedMouseSensitivity
+                self.virtualMouseX = min(max(self.virtualMouseX + dx, 0), self.view.bounds.width - 1)
+                self.virtualMouseY = min(max(self.virtualMouseY + dy, 0), self.view.bounds.height - 1)
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                cursorView.layer.position = CGPoint(x: self.virtualMouseX + cursorView.bounds.width / 2, y: self.virtualMouseY + cursorView.bounds.height / 2)
+                CATransaction.commit()
+                CATransaction.flush()
+            }
+            
+            // Sync to JS for server forwarding (latency here is fine — not on visual critical path)
             // GameController Y is mathematically inverted from web coordinates (Positive is Up natively vs Positive is Down in browser)
-            self.accumMoveX += CGFloat(deltaX)
-            self.accumMoveY += CGFloat(-deltaY)
+            if self.isClientSideMouse {
+                let js = "if (window.nativeMouseMoveAbs) { window.nativeMouseMoveAbs(\(self.virtualMouseX), \(self.virtualMouseY)); }"
+                self.webView.evaluateJavaScript(js, completionHandler: nil)
+            } else {
+                let js = "if (window.nativeMouseMove) { window.nativeMouseMove(\(deltaX), \(-deltaY)); }"
+                self.webView.evaluateJavaScript(js, completionHandler: nil)
+            }
         }
         
         mouseInput.leftButton.pressedChangedHandler = { [weak self] (button: GCControllerButtonInput, value: Float, pressed: Bool) in
@@ -375,12 +394,19 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
             webView.evaluateJavaScript(js, completionHandler: nil)
             
             if isPointerLocked {
+                if isClientSideMouse {
+                    virtualMouseX = view.bounds.width / 2
+                    virtualMouseY = view.bounds.height / 2
+                    cursorView?.frame.origin = CGPoint(x: virtualMouseX, y: virtualMouseY)
+                    cursorView?.isHidden = false
+                }
                 if let mouse = GCMouse.current {
                     setupMouse(mouse)
                 } else if let mouse = GCMouse.mice().first {
                     setupMouse(mouse)
                 }
             } else {
+                cursorView?.isHidden = true
                 if let mouse = GCMouse.current {
                     clearMouse(mouse)
                 } else if let mouse = GCMouse.mice().first {
@@ -406,6 +432,13 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
                 isPointerLocked = false
             } else if body == "ready" {
                 isReadyForPointerLock = true
+            } else if body.hasPrefix("csm:") {
+                // Client-side mouse config: "csm:<sensitivity>"
+                isClientSideMouse = true
+                let sensitivityStr = String(body.dropFirst("csm:".count))
+                storedMouseSensitivity = CGFloat(Double(sensitivityStr) ?? 1.5)
+                // Tell JS to skip canvas cursor drawing — native overlay handles it
+                webView.evaluateJavaScript("window.nativeCursorOverlay = true;", completionHandler: nil)
             }
         }
     }

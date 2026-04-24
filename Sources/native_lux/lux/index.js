@@ -265,7 +265,6 @@ class VideoWindow {
         this.lastRightClickTime = 0;
 
         this.currentPenStroke = [];
-        this.drawPending = false;
 
         this.cachedVideoWidth = 1;
         this.cachedVideoHeight = 1;
@@ -347,6 +346,12 @@ class VideoWindow {
 
                 if (!this.viewOnly) {
                     window.nativeMouseMove = (x, y) => { window.nativeIsPointerLocked = true; this.handleMouseMove({ preventDefault: () => { }, movementX: x, movementY: y, isNative: true }); };
+                    window.nativeMouseMoveAbs = (x, y) => {
+                        window.nativeIsPointerLocked = true;
+                        this.virtualMouseX = x;
+                        this.virtualMouseY = y;
+                        this.sendOrdered({ type: "mousemoveabs", ...this.positionInVideo(x, y) });
+                    };
                     window.nativeMouseDown = (button) => { window.nativeIsPointerLocked = true; this.handleMouseDown({ preventDefault: () => { }, button: button, isNative: true }); };
                     window.nativeMouseUp = (button) => { window.nativeIsPointerLocked = true; this.handleMouseUp({ preventDefault: () => { }, button: button, isNative: true }); };
                     window.nativeWheel = (dx, dy) => { window.nativeIsPointerLocked = true; this.handleWheel({ preventDefault: () => { }, deltaX: dx, deltaY: dy, isNative: true }); };
@@ -367,8 +372,12 @@ class VideoWindow {
                     if (this.clientSideMouse) {
                         this.mouseImage = new Image();
                         this.mouseImage.src = "mouse.png";
-                        this.mouseImage.onload = this.scheduleDraw.bind(this);
+                        this.mouseImage.onload = this.draw.bind(this);
                         document.addEventListener("contextmenu", event => event.preventDefault());
+                        // Tell Swift about client-side mouse config for native cursor overlay
+                        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.pointerLock) {
+                            window.webkit.messageHandlers.pointerLock.postMessage("csm:" + this.mouseSensitivity);
+                        }
                     }
 
                     window.nativeSendEscape = async () => {
@@ -524,18 +533,9 @@ class VideoWindow {
     moveVirtualMouse(x, y) {
         this.virtualMouseX = Math.min(Math.max(this.virtualMouseX + x, 0), this.cachedCanvasWidth - 1);
         this.virtualMouseY = Math.min(Math.max(this.virtualMouseY + y, 0), this.cachedCanvasHeight - 1);
-        this.scheduleDraw();
+        this.draw();
     }
 
-    scheduleDraw() {
-        if (!this.drawPending) {
-            this.drawPending = true;
-            requestAnimationFrame(() => {
-                this.draw();
-                this.drawPending = false;
-            });
-        }
-    }
 
     draw() {
         this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
@@ -557,8 +557,8 @@ class VideoWindow {
             this.ctx.restore();
         }
 
-        // Draw mouse
-        if (this.clientSideMouse && (this.simulateTouchpad || window.nativeIsPointerLocked || document.pointerLockElement) && this.mouseImage && this.mouseImage.complete) {
+        // Draw mouse (skip if native UIKit cursor overlay is handling it)
+        if (this.clientSideMouse && !(window.nativeCursorOverlay && window.nativeIsPointerLocked) && (this.simulateTouchpad || window.nativeIsPointerLocked || document.pointerLockElement) && this.mouseImage && this.mouseImage.complete) {
             this.ctx.save();
             this.ctx.shadowColor = "rgba(0, 0, 0, 0.3)";
             this.ctx.shadowBlur = 2.5 * window.devicePixelRatio;
@@ -622,7 +622,7 @@ class VideoWindow {
             } else {
                 this.virtualMouseX = event.clientX;
                 this.virtualMouseY = event.clientY;
-                this.scheduleDraw();
+                this.draw();
             }
             const message = {
                 type: "mousemoveabs",
@@ -1002,7 +1002,7 @@ class VideoWindow {
             };
             if (!shallowEqual(message, this.lastPenMessage)) {
                 this.currentPenStroke = [];
-                this.scheduleDraw();
+                this.draw();
 
                 this.sendOrdered(message);
                 this.lastPenMessage = message;
@@ -1057,7 +1057,7 @@ class VideoWindow {
 
                     this.sendOrdered(message);
                 }
-                this.scheduleDraw();
+                this.draw();
 
                 this.lastPenMessage = message;
             }
@@ -1082,7 +1082,7 @@ class VideoWindow {
                 this.virtualMouseX = Math.min(this.virtualMouseX, this.cachedCanvasWidth - 1);
                 this.virtualMouseY = Math.min(this.virtualMouseY, this.cachedCanvasHeight - 1);
             }
-            this.scheduleDraw();
+            this.draw();
         }
     }
 }
