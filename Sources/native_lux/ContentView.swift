@@ -207,10 +207,6 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
         displayLink?.add(to: .main, forMode: .common)
     }
     
-    override var canBecomeFirstResponder: Bool {
-        return true
-    }
-
     override var keyCommands: [UIKeyCommand]? {
         return [
             UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(handleEscapeKey))
@@ -238,7 +234,6 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
     
     @objc func handleRelockTap() {
         if isReadyForPointerLock && !isPointerLocked {
-            self.becomeFirstResponder()
             isPointerLocked = true
         }
     }
