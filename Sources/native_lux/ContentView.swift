@@ -101,6 +101,8 @@ class TouchDownGestureRecognizer: UIGestureRecognizer {
 class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureRecognizerDelegate {
     static var globalIsPointerLocked = false
     static var hasSwizzled = false
+    
+    var hasGCMouse = false
 
     var webView: WKWebView!
     var url: URL
@@ -240,6 +242,8 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
     
     @objc func handleScroll(_ gesture: UIPanGestureRecognizer) {
         guard isPointerLocked else { return }
+        // Only use UIKit pan as fallback when no GCMouse provides raw scroll
+        guard !hasGCMouse else { return }
         if gesture.state == .changed || gesture.state == .ended {
             let translation = gesture.translation(in: view)
             gesture.setTranslation(.zero, in: view)
@@ -325,6 +329,7 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
     @available(iOS 14.0, *)
     func setupMouse(_ mouse: GCMouse) {
         guard let mouseInput = mouse.mouseInput else { return }
+        hasGCMouse = true
         
         mouseInput.mouseMovedHandler = { [weak self] (input: GCMouseInput, deltaX: Float, deltaY: Float) in
             guard let self = self, self.isPointerLocked else { return }
@@ -333,6 +338,17 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
             // GameController Y is mathematically inverted from web coordinates (Positive is Up natively vs Positive is Down in browser)
             self.accumMoveX += CGFloat(deltaX)
             self.accumMoveY += CGFloat(-deltaY)
+        }
+        
+        // GCMouseInput scroll — axes are swapped vs UIKit (vertical=xAxis, horizontal=yAxis).
+        // iOS inflates values >1.0 via acceleration; clamp to ±1.0 to remove it.
+        // High-res mice report sub-notch fractions (<1.0), which pass through untouched.
+        mouseInput.scroll.valueChangedHandler = { [weak self] (dpad: GCControllerDirectionPad, xValue: Float, yValue: Float) in
+            guard let self = self, self.isPointerLocked else { return }
+            let clampedY = max(-1.0, min(1.0, yValue))
+            let clampedX = max(-1.0, min(1.0, xValue))
+            self.accumWheelX += CGFloat(-clampedY) * 120
+            self.accumWheelY += CGFloat(-clampedX) * 120
         }
         
         mouseInput.leftButton.pressedChangedHandler = { [weak self] (button: GCControllerButtonInput, value: Float, pressed: Bool) in
@@ -357,7 +373,9 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
     @available(iOS 14.0, *)
     func clearMouse(_ mouse: GCMouse) {
         guard let mouseInput = mouse.mouseInput else { return }
+        hasGCMouse = false
         mouseInput.mouseMovedHandler = nil
+        mouseInput.scroll.valueChangedHandler = nil
         mouseInput.leftButton.pressedChangedHandler = nil
         mouseInput.rightButton?.pressedChangedHandler = nil
         mouseInput.middleButton?.pressedChangedHandler = nil
