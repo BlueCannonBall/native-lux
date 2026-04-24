@@ -185,8 +185,6 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
             imageView.layer.shadowOpacity = 0.3
             imageView.layer.shadowOffset = CGSize(width: 1.5, height: 1.5)
             imageView.layer.shadowRadius = 2.5
-            // Pre-compute shadow path to avoid expensive per-frame recalculation
-            imageView.layer.shadowPath = UIBezierPath(rect: CGRect(origin: .zero, size: cursorSize)).cgPath
             view.addSubview(imageView)
             self.cursorView = imageView
         }
@@ -336,9 +334,13 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
                 let dy = CGFloat(-deltaY) * self.storedMouseSensitivity
                 self.virtualMouseX = min(max(self.virtualMouseX + dx, 0), self.view.bounds.width - 1)
                 self.virtualMouseY = min(max(self.virtualMouseY + dy, 0), self.view.bounds.height - 1)
+                // Snap to pixel grid to avoid sub-pixel anti-aliasing shimmer
+                let scale = self.view.window?.screen.scale ?? UIScreen.main.scale
+                let snappedX = round(self.virtualMouseX * scale) / scale
+                let snappedY = round(self.virtualMouseY * scale) / scale
                 CATransaction.begin()
                 CATransaction.setDisableActions(true)
-                cursorView.layer.position = CGPoint(x: self.virtualMouseX + cursorView.bounds.width / 2, y: self.virtualMouseY + cursorView.bounds.height / 2)
+                cursorView.layer.position = CGPoint(x: snappedX + cursorView.bounds.width / 2, y: snappedY + cursorView.bounds.height / 2)
                 CATransaction.commit()
                 CATransaction.flush()
             }
