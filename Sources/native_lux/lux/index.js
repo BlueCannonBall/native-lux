@@ -346,11 +346,11 @@ class VideoWindow {
                 }
 
                 if (!this.viewOnly) {
-                    window.nativeMouseMove = (x, y) => { window.nativeIsPointerLocked = true; this.handleMouseMove({ preventDefault: () => {}, movementX: x, movementY: y, isNative: true }); };
-                    window.nativeMouseDown = (button) => { window.nativeIsPointerLocked = true; this.handleMouseDown({ preventDefault: () => {}, button: button, isNative: true }); };
-                    window.nativeMouseUp = (button) => { window.nativeIsPointerLocked = true; this.handleMouseUp({ preventDefault: () => {}, button: button, isNative: true }); };
-                    window.nativeWheel = (dx, dy) => { window.nativeIsPointerLocked = true; this.handleWheel({ preventDefault: () => {}, deltaX: dx, deltaY: dy, isNative: true }); };
-                    
+                    window.nativeMouseMove = (x, y) => { window.nativeIsPointerLocked = true; this.handleMouseMove({ preventDefault: () => { }, movementX: x, movementY: y, isNative: true }); };
+                    window.nativeMouseDown = (button) => { window.nativeIsPointerLocked = true; this.handleMouseDown({ preventDefault: () => { }, button: button, isNative: true }); };
+                    window.nativeMouseUp = (button) => { window.nativeIsPointerLocked = true; this.handleMouseUp({ preventDefault: () => { }, button: button, isNative: true }); };
+                    window.nativeWheel = (dx, dy) => { window.nativeIsPointerLocked = true; this.handleWheel({ preventDefault: () => { }, deltaX: dx, deltaY: dy, isNative: true }); };
+
                     this.canvas.addEventListener("mousedown", async () => {
                         if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.pointerLock) {
                             window.webkit.messageHandlers.pointerLock.postMessage("lock");
@@ -370,6 +370,18 @@ class VideoWindow {
                         this.mouseImage.onload = this.scheduleDraw.bind(this);
                         document.addEventListener("contextmenu", event => event.preventDefault());
                     }
+
+                    window.nativeSendEscape = async () => {
+                        this.sendOrdered({
+                            type: "keydown",
+                            key: "Escape",
+                        });
+                        await sleep(50);
+                        this.sendOrdered({
+                            type: "keyup",
+                            key: "Escape",
+                        });
+                    };
                     this.canvas.addEventListener("mousemove", this.handleMouseMove.bind(this));
                     this.canvas.addEventListener("mousedown", this.handleMouseDown.bind(this));
                     this.canvas.addEventListener("mouseup", this.handleMouseUp.bind(this));
@@ -600,7 +612,7 @@ class VideoWindow {
 
     handleMouseMove(event) {
         if (window.nativeIsPointerLocked && !event.isNative) return;
-        
+
         const dx = event.movementX * this.mouseSensitivity;
         const dy = event.movementY * this.mouseSensitivity;
 
@@ -629,12 +641,12 @@ class VideoWindow {
 
     handleMouseDown(event) {
         if (window.nativeIsPointerLocked && !event.isNative) return;
-        
+
         if (this.clientSideMouse && (window.nativeIsPointerLocked || document.pointerLockElement)) {
-             this.sendOrdered({
-                 type: "mousemoveabs",
-                 ...this.positionInVideo(this.virtualMouseX, this.virtualMouseY),
-             });
+            this.sendOrdered({
+                type: "mousemoveabs",
+                ...this.positionInVideo(this.virtualMouseX, this.virtualMouseY),
+            });
         }
 
         const message = {
@@ -646,12 +658,12 @@ class VideoWindow {
 
     handleMouseUp(event) {
         if (window.nativeIsPointerLocked && !event.isNative) return;
-        
+
         if (this.clientSideMouse && (window.nativeIsPointerLocked || document.pointerLockElement)) {
-             this.sendOrdered({
-                 type: "mousemoveabs",
-                 ...this.positionInVideo(this.virtualMouseX, this.virtualMouseY),
-             });
+            this.sendOrdered({
+                type: "mousemoveabs",
+                ...this.positionInVideo(this.virtualMouseX, this.virtualMouseY),
+            });
         }
 
         const message = {
@@ -676,9 +688,16 @@ class VideoWindow {
     handleKeyDown(event) {
         event.preventDefault();
 
+        let key = event.code;
+
+        // Control + [ acts as a pure Escape key to avoid dropping pointer lock
+        if (event.ctrlKey && event.code === "BracketLeft") {
+            key = "Escape";
+        }
+
         const message = {
             type: "keydown",
-            key: event.code,
+            key: key,
         };
         this.sendOrdered(message);
     }
@@ -686,9 +705,15 @@ class VideoWindow {
     handleKeyUp(event) {
         event.preventDefault();
 
+        let key = event.code;
+
+        if (event.ctrlKey && event.code === "BracketLeft") {
+            key = "Escape";
+        }
+
         const message = {
             type: "keyup",
-            key: event.code,
+            key: key,
         };
         this.sendOrdered(message);
     }

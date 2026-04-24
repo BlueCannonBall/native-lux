@@ -220,7 +220,7 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
     @objc func handleEscapeKey() {
         if isPointerLocked {
             isPointerLocked = false
-            let js = "window.nativeIsPointerLocked = false;"
+            let js = "window.nativeIsPointerLocked = false; if (window.nativeSendEscape) { window.nativeSendEscape(); }"
             webView.evaluateJavaScript(js, completionHandler: nil)
         }
     }
@@ -295,7 +295,7 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
                 if let lockedAt = lockedAt, Date().timeIntervalSince(lockedAt) > 0.5 {
                     // The system forced an unlock, and we didn't catch it via notification
                     isPointerLocked = false
-                    let fallbackJs = "window.nativeIsPointerLocked = false;"
+                    let fallbackJs = "window.nativeIsPointerLocked = false; if (window.nativeSendEscape) { window.nativeSendEscape(); }"
                     webView.evaluateJavaScript(fallbackJs, completionHandler: nil)
                 }
             }
@@ -322,7 +322,7 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
         if let state = state, !state.isLocked && isPointerLocked {
             // The system forced an unlock (e.g. user pressed ESC)
             isPointerLocked = false
-            let js = "window.nativeIsPointerLocked = false;"
+            let js = "window.nativeIsPointerLocked = false; if (window.nativeSendEscape) { window.nativeSendEscape(); }"
             webView.evaluateJavaScript(js, completionHandler: nil)
         }
     }
