@@ -374,15 +374,7 @@ class VideoWindow {
                     this.canvas.addEventListener("mousedown", this.handleMouseDown.bind(this));
                     this.canvas.addEventListener("mouseup", this.handleMouseUp.bind(this));
                     document.addEventListener("wheel", this.handleWheel.bind(this), { passive: false });
-                    document.addEventListener("keydown", event => {
-                        if (event.code === "Escape") {
-                            window.nativeIsPointerLocked = false;
-                            if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.pointerLock) {
-                                window.webkit.messageHandlers.pointerLock.postMessage("unlock");
-                            }
-                        }
-                        this.handleKeyDown.bind(this)(event);
-                    }, { passive: false });
+                    document.addEventListener("keydown", this.handleKeyDown.bind(this), { passive: false });
                     document.addEventListener("keyup", this.handleKeyUp.bind(this), { passive: false });
                     this.canvas.addEventListener("touchstart", event => event.preventDefault(), { passive: false });
                     this.canvas.addEventListener("touchend", event => event.preventDefault(), { passive: false });
@@ -398,7 +390,6 @@ class VideoWindow {
                 this.video.style.flex = "1";
                 this.video.style.userSelect = "none";
                 this.video.style.webkitUserSelect = "none";
-                this.video.style.webkitTouchCallout = "none";
                 this.video.style.transform = "translateZ(0)";
 
                 if (!this.viewOnly) {
@@ -409,7 +400,6 @@ class VideoWindow {
                     this.canvas.style.height = "100%";
                     this.canvas.style.userSelect = "none";
                     this.canvas.style.webkitUserSelect = "none";
-                    this.canvas.style.webkitTouchCallout = "none";
                     this.canvas.style.transform = "translateZ(0)";
                 }
 
@@ -419,7 +409,12 @@ class VideoWindow {
                 this.inner.style.removeProperty("align-items");
 
                 this.inner.appendChild(this.video);
-                if (!this.viewOnly) this.inner.appendChild(this.canvas);
+                if (!this.viewOnly) {
+                    this.inner.appendChild(this.canvas);
+                    if (!this.clientSideMouse && window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.pointerLock) {
+                        window.webkit.messageHandlers.pointerLock.postMessage("ready");
+                    }
+                }
                 this.handleResize();
             } else if (event.track.kind === "audio") {
                 this.audio = media;
@@ -521,7 +516,13 @@ class VideoWindow {
     }
 
     scheduleDraw() {
-        this.draw();
+        if (!this.drawPending) {
+            this.drawPending = true;
+            requestAnimationFrame(() => {
+                this.draw();
+                this.drawPending = false;
+            });
+        }
     }
 
     draw() {

@@ -89,6 +89,15 @@ struct WebViewWrapper: UIViewControllerRepresentable {
     }
 }
 
+class TouchDownGestureRecognizer: UIGestureRecognizer {
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        super.touchesBegan(touches, with: event)
+        if state == .possible {
+            state = .recognized
+        }
+    }
+}
+
 class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureRecognizerDelegate {
     static var globalIsPointerLocked = false
     static var hasSwizzled = false
@@ -98,15 +107,24 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
     
     var isPointerLocked = false {
         didSet {
+            if isPointerLocked {
+                lockedAt = Date()
+            }
             WebViewController.globalIsPointerLocked = isPointerLocked
             updatePointerLockState()
         }
     }
     
+    var lockedAt: Date?
+    
+    var isReadyForPointerLock = false
+    
     var accumMoveX: CGFloat = 0
     var accumMoveY: CGFloat = 0
     var accumWheelX: CGFloat = 0
     var accumWheelY: CGFloat = 0
+    
+    var displayLink: CADisplayLink?
     
     init(url: URL) {
         self.url = url
@@ -169,17 +187,60 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
         sinkGesture.delegate = self
         view.addGestureRecognizer(sinkGesture)
         
+        let relockGesture = TouchDownGestureRecognizer(target: self, action: #selector(handleRelockTap))
+        relockGesture.cancelsTouchesInView = false
+        relockGesture.delegate = self
+        view.addGestureRecognizer(relockGesture)
+        
         // 3. Pointer capture via GameController for raw trackpad accuracy
         if #available(iOS 14.0, *) {
             NotificationCenter.default.addObserver(self, selector: #selector(mouseDidConnect(_:)), name: .GCMouseDidConnect, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(pointerLockStateDidChange(_:)), name: UIPointerLockState.didChangeNotification, object: nil)
             if let mouse = GCMouse.current {
+                setupMouse(mouse)
+            } else if let mouse = GCMouse.mice().first {
                 setupMouse(mouse)
             }
         }
+        
+        displayLink = CADisplayLink(target: self, selector: #selector(displayLinkFired))
+        displayLink?.add(to: .main, forMode: .common)
     }
     
+    override var canBecomeFirstResponder: Bool {
+        return true
+    }
+
+    override var keyCommands: [UIKeyCommand]? {
+        return [
+            UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(handleEscapeKey))
+        ]
+    }
+    
+    @objc func handleEscapeKey() {
+        if isPointerLocked {
+            isPointerLocked = false
+            let js = "window.nativeIsPointerLocked = false;"
+            webView.evaluateJavaScript(js, completionHandler: nil)
+        }
+    }
+
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if gestureRecognizer is TouchDownGestureRecognizer {
+            return true
+        }
         return isPointerLocked
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        return true
+    }
+    
+    @objc func handleRelockTap() {
+        if isReadyForPointerLock && !isPointerLocked {
+            self.becomeFirstResponder()
+            isPointerLocked = true
+        }
     }
     
     @objc func handleScroll(_ gesture: UIPanGestureRecognizer) {
@@ -190,15 +251,53 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
             
             accumWheelX += -translation.x
             accumWheelY += -translation.y
-            
-            let ix = trunc(accumWheelX)
-            let iy = trunc(accumWheelY)
-            
-            if ix != 0 || iy != 0 {
-                accumWheelX -= ix
-                accumWheelY -= iy
-                let js = "if (window.nativeWheel) { window.nativeWheel(\(ix), \(iy)); }"
-                webView.evaluateJavaScript(js, completionHandler: nil)
+        }
+    }
+    
+    @objc func displayLinkFired() {
+        guard isPointerLocked else { return }
+        
+        let ix = trunc(accumMoveX)
+        let iy = trunc(accumMoveY)
+        
+        let sx = trunc(accumWheelX)
+        let sy = trunc(accumWheelY)
+        
+        var js = ""
+        
+        if ix != 0 || iy != 0 {
+            accumMoveX -= ix
+            accumMoveY -= iy
+            js += "if (window.nativeMouseMove) { window.nativeMouseMove(\(ix), \(iy)); }"
+        }
+        
+        if sx != 0 || sy != 0 {
+            accumWheelX -= sx
+            accumWheelY -= sy
+            js += "if (window.nativeWheel) { window.nativeWheel(\(sx), \(sy)); }"
+        }
+        
+        if !js.isEmpty {
+            webView.evaluateJavaScript(js, completionHandler: nil)
+        }
+        
+        if #available(iOS 14.0, *) {
+            var isAnySceneLocked = false
+            for scene in UIApplication.shared.connectedScenes {
+                if let windowScene = scene as? UIWindowScene, let state = windowScene.pointerLockState {
+                    if state.isLocked {
+                        isAnySceneLocked = true
+                        break
+                    }
+                }
+            }
+            if !isAnySceneLocked && isPointerLocked {
+                if let lockedAt = lockedAt, Date().timeIntervalSince(lockedAt) > 0.5 {
+                    // The system forced an unlock, and we didn't catch it via notification
+                    isPointerLocked = false
+                    let fallbackJs = "window.nativeIsPointerLocked = false;"
+                    webView.evaluateJavaScript(fallbackJs, completionHandler: nil)
+                }
             }
         }
     }
@@ -207,6 +306,25 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
     @objc func mouseDidConnect(_ notification: Notification) {
         guard let mouse = notification.object as? GCMouse else { return }
         setupMouse(mouse)
+    }
+
+    @available(iOS 14.0, *)
+    @objc func pointerLockStateDidChange(_ notification: Notification) {
+        let state: UIPointerLockState?
+        if let scene = notification.object as? UIScene {
+            state = scene.pointerLockState
+        } else if let scene = view.window?.windowScene {
+            state = scene.pointerLockState
+        } else {
+            return
+        }
+        
+        if let state = state, !state.isLocked && isPointerLocked {
+            // The system forced an unlock (e.g. user pressed ESC)
+            isPointerLocked = false
+            let js = "window.nativeIsPointerLocked = false;"
+            webView.evaluateJavaScript(js, completionHandler: nil)
+        }
     }
 
     @available(iOS 14.0, *)
@@ -220,16 +338,6 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
             // GameController Y is mathematically inverted from web coordinates (Positive is Up natively vs Positive is Down in browser)
             self.accumMoveX += CGFloat(deltaX)
             self.accumMoveY += CGFloat(-deltaY)
-            
-            let ix = trunc(self.accumMoveX)
-            let iy = trunc(self.accumMoveY)
-            
-            if ix != 0 || iy != 0 {
-                self.accumMoveX -= ix
-                self.accumMoveY -= iy
-                let js = "if (window.nativeMouseMove) { window.nativeMouseMove(\(ix), \(iy)); }"
-                self.webView.evaluateJavaScript(js, completionHandler: nil)
-            }
         }
         
         mouseInput.leftButton.pressedChangedHandler = { [weak self] (button: GCControllerButtonInput, value: Float, pressed: Bool) in
@@ -251,6 +359,15 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
         }
     }
     
+    @available(iOS 14.0, *)
+    func clearMouse(_ mouse: GCMouse) {
+        guard let mouseInput = mouse.mouseInput else { return }
+        mouseInput.mouseMovedHandler = nil
+        mouseInput.leftButton.pressedChangedHandler = nil
+        mouseInput.rightButton?.pressedChangedHandler = nil
+        mouseInput.middleButton?.pressedChangedHandler = nil
+    }
+    
     override var prefersPointerLocked: Bool {
         return isPointerLocked
     }
@@ -262,13 +379,23 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
             let js = "window.nativeIsPointerLocked = \(isPointerLocked ? "true" : "false");"
             webView.evaluateJavaScript(js, completionHandler: nil)
             
-            if isPointerLocked, let mouse = GCMouse.current {
-                setupMouse(mouse)
+            if isPointerLocked {
+                if let mouse = GCMouse.current {
+                    setupMouse(mouse)
+                } else if let mouse = GCMouse.mice().first {
+                    setupMouse(mouse)
+                }
+            } else {
+                if let mouse = GCMouse.current {
+                    clearMouse(mouse)
+                } else if let mouse = GCMouse.mice().first {
+                    clearMouse(mouse)
+                }
             }
             
             for scene in UIApplication.shared.connectedScenes {
-                if let windowScene = scene as? UIWindowScene {
-                    for window in windowScene.windows where window.isKeyWindow {
+                if let windowScene = scene as? UIWindowScene, windowScene.activationState == .foregroundActive {
+                    for window in windowScene.windows {
                         window.rootViewController?.setNeedsUpdateOfPrefersPointerLocked()
                     }
                 }
@@ -282,6 +409,8 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
                 isPointerLocked = true
             } else if body == "unlock" {
                 isPointerLocked = false
+            } else if body == "ready" {
+                isReadyForPointerLock = true
             }
         }
     }
@@ -289,12 +418,9 @@ class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureReco
 
 extension UIViewController {
     @objc var lux_prefersPointerLocked: Bool {
-        // If our global lock is engaged, tell the system we prefer pointer lock.
-        // Otherwise, fall back to the original implementation.
         if WebViewController.globalIsPointerLocked {
             return true
         }
-        // Calls the original method due to swizzling
         return self.lux_prefersPointerLocked
     }
 }
