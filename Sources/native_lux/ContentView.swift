@@ -63,7 +63,19 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         #if DEBUG
         webView.isInspectable = true
         #endif
-        view = webView
+        let root = UIView()
+        root.backgroundColor = .systemBackground
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(webView)
+        NSLayoutConstraint.activate([
+            webView.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor),
+            webView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            // Only reserve the top status bar. Do not leave a bottom safe-area
+            // strip when the system Home indicator is automatically hidden.
+            webView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+        ])
+        view = root
         cursor = UIImageView(image: Bundle.module.url(forResource: "mouse", withExtension: "png")
             .flatMap { UIImage(contentsOfFile: $0.path) })
         cursor.bounds.size = CGSize(width: (cursor.image?.size.width ?? 0) / 40, height: (cursor.image?.size.height ?? 0) / 40)
@@ -73,7 +85,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         cursor.layer.shadowOpacity = 0.3
         cursor.layer.shadowOffset = CGSize(width: 1.5, height: 1.5)
         cursor.layer.shadowRadius = 2.5
-        view.addSubview(cursor)
+        webView.addSubview(cursor)
     }
 
     override func viewDidLoad() {
@@ -83,13 +95,13 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
         scroll.allowedTouchTypes = []
         scroll.cancelsTouchesInView = false
         scroll.delegate = self
-        view.addGestureRecognizer(scroll)
+        webView.addGestureRecognizer(scroll)
         let clicks = UILongPressGestureRecognizer(target: nil, action: nil)
         clicks.minimumPressDuration = 0
         clicks.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
         clicks.delaysTouchesBegan = true
         clicks.delegate = self
-        view.addGestureRecognizer(clicks)
+        webView.addGestureRecognizer(clicks)
         for name in [Notification.Name.GCMouseDidConnect, .GCMouseDidDisconnect, .GCMouseDidBecomeCurrent] {
             NotificationCenter.default.addObserver(self, selector: #selector(mouseChanged(_:)), name: name, object: nil)
         }
@@ -106,8 +118,8 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        guard viewportSize != view.bounds.size else { return }
-        viewportSize = view.bounds.size
+        guard viewportSize != webView.bounds.size else { return }
+        viewportSize = webView.bounds.size
         input("layout", "0,0")
         if capturing && clientSideMouse { updateCursor() }
     }
@@ -191,7 +203,7 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
                 MainActor.assumeIsolated {
                     guard let self, let next, self.mouse === next, self.capturing, x.isFinite, y.isFinite else { return }
                     if self.clientSideMouse {
-                        var point = self.position ?? CGPoint(x: self.view.bounds.midX, y: self.view.bounds.midY)
+                        var point = self.position ?? CGPoint(x: self.webView.bounds.midX, y: self.webView.bounds.midY)
                         point.x += CGFloat(x) * self.sensitivity
                         point.y -= CGFloat(y) * self.sensitivity
                         self.position = point
@@ -228,9 +240,9 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
     }
 
     private func updateCursor() {
-        var point = position ?? CGPoint(x: view.bounds.midX, y: view.bounds.midY)
-        point.x = min(max(point.x, 0), max(view.bounds.width - 1, 0))
-        point.y = min(max(point.y, 0), max(view.bounds.height - 1, 0))
+        var point = position ?? CGPoint(x: webView.bounds.midX, y: webView.bounds.midY)
+        point.x = min(max(point.x, 0), max(webView.bounds.width - 1, 0))
+        point.y = min(max(point.y, 0), max(webView.bounds.height - 1, 0))
         position = point
         let scale = view.window?.screen.scale ?? 2
         CATransaction.begin()
@@ -244,8 +256,8 @@ final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavig
 
     @objc private func scroll(_ gesture: UIPanGestureRecognizer) {
         guard capturing, gesture.state == .changed || gesture.state == .ended else { return }
-        let delta = gesture.translation(in: view)
-        gesture.setTranslation(.zero, in: view)
+        let delta = gesture.translation(in: webView)
+        gesture.setTranslation(.zero, in: webView)
         input("wheel", "\(-delta.x),\(-delta.y)")
     }
 

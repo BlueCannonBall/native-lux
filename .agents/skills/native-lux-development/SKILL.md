@@ -58,6 +58,12 @@ description: Build and verify native-lux on Linux, test its injected adapter aga
   Escape releases. Keep the system top status bar visible
   (`prefersStatusBarHidden == false`) and request Home-indicator auto-hide (apps
   cannot permanently hide it; iPadOS may transiently reveal it during gestures).
+- Showing the status bar does not reserve its space when WKWebView is the root
+  view. Use a container with the web view's top pinned to the top safe-area guide,
+  but its bottom pinned to the container edge (not the bottom safe-area guide).
+  Keep cursor rendering, clamping, viewport-size updates, and scroll coordinates
+  relative to webView.bounds, or the status-bar offset breaks pointer alignment.
+  Check the actual layout on an iPad; source-contract checks are not UIKit tests.
 - Keep capture intent separate from actual scene lock. Interruptions suspend;
   explicit release cancels. Test device loss, stale document/sequence messages,
   button/key release, and synchronous per-sample delivery.
@@ -67,7 +73,7 @@ description: Build and verify native-lux on Linux, test its injected adapter aga
   UIKit lock monitor must never schedule input delivery.
 - Capture is exclusive: while requested/active, reject original web pointer/touch/
   mouse events on the stream, even ones labeled touch/Pencil. Only native mouse
-  events reach upstream. Keep controls touchable; after release, finger/Pencil and
+  events reach upstream. Do not add controls; after Escape, finger/Pencil and
   simulated-touchpad events must work normally. Do not promise simultaneous input.
 - Preserve Ctrl+[ as remote Escape without capture release; it was present in the
   early application's Escape fix but absent from the later working copy. Test

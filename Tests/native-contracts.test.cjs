@@ -55,6 +55,17 @@ test('the app shows the top status bar, auto-hides the home indicator, and adds 
     assert.doesNotMatch(adapter, /native-lux-controls|attachShadow|Capture mouse|Release mouse|position:\s*fixed/);
 });
 
+test('the video viewport reserves top status-bar space and cursor coordinates use that same viewport', () => {
+    const swift = fs.readFileSync(path.join(root, 'Sources/native_lux/ContentView.swift'), 'utf8');
+    assert.match(swift, /webView\.topAnchor\.constraint\(equalTo: root\.safeAreaLayoutGuide\.topAnchor\)/);
+    assert.match(swift, /webView\.bottomAnchor\.constraint\(equalTo: root\.bottomAnchor\)/);
+    assert.doesNotMatch(swift, /webView\.bottomAnchor\.constraint\(equalTo: root\.safeAreaLayoutGuide\.bottomAnchor\)/);
+    assert.match(swift, /webView\.addSubview\(cursor\)/);
+    assert.match(swift, /viewportSize = webView\.bounds\.size/);
+    assert.match(swift, /gesture\.translation\(in: webView\)/);
+    assert.doesNotMatch(swift, /\bview\.bounds/);
+});
+
 test('native metadata retains the application identity and permission descriptions', () => {
     const config = fs.readFileSync(path.join(root, 'xtool.yml'), 'utf8');
     const plist = fs.readFileSync(path.join(root, 'Info.plist'), 'utf8');

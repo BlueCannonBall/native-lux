@@ -64,8 +64,11 @@ WebKit's pointer-type labels. The initial activation press is not sent as a remo
 click. UIKit delays indirect touches during capture; the adapter also blocks web
 pointer events, including events labeled as touch, rather than guessing their source.
 
-The system status bar remains visible at the top. The bottom Home indicator is
-requested to auto-hide; iPadOS still briefly reveals it after some system gestures.
+The system status bar remains visible at the top, with the web view laid out below
+the top safe area so it cannot cover the video. The bottom edge remains full-size
+and the Home indicator is requested to auto-hide; iPadOS still briefly reveals it
+after some system gestures. Native cursor coordinates use the web view's bounds,
+not the full screen including the status bar.
 
 In **non-client-side mode**, raw GameController deltas go immediately to the
 adapter as relative mouse events. In **client-side mode**, each raw callback

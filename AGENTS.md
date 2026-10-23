@@ -18,7 +18,8 @@
   diagnostic panel over Lux. This is a standing user requirement for remote
   desktop apps. Mouse click captures; Escape releases. Do not replace overlays
   with other visible chrome.
-- Keep the top system status bar visible. Request automatic hiding of the bottom
+- Keep the top system status bar visible and reserve its top safe-area space;
+  never draw the video underneath it. Request automatic hiding of the bottom
   Home indicator; note that iPadOS can transiently reveal it during system gestures.
 
 # Latency

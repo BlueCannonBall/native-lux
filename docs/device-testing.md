@@ -20,6 +20,9 @@ Run this section with client-side mouse **off**, then **on**:
 - Capture by mouse-clicking the video. Confirm no web button, HUD, or status panel
   is drawn over the app. Confirm the top system status bar is visible and the bottom
   Home indicator auto-hides after inactivity.
+- Confirm the status bar has its own space above the video, not over it, in portrait
+  and landscape. Verify cursor alignment at the top-left and bottom-right of the
+  video and ensure no permanent blank strip is reserved for the Home indicator.
 - Check left/right/middle buttons, drag, wheel, and horizontal/trackpad scrolling.
 - Hold a button and a keyboard modifier, open Control Center, then return. Verify
   no remote button/modifier remains down and capture can resume without a new click.
