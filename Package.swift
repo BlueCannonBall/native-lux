@@ -6,7 +6,6 @@ let package = Package(
     name: "Lux Client",
     platforms: [
         .iOS(.v17),
-        .macOS(.v14),
     ],
     products: [
         // An xtool project should contain exactly one library product,
@@ -19,7 +18,22 @@ let package = Package(
     targets: [
         .target(
             name: "native_lux",
-            resources: [.copy("lux")]
+            exclude: ["WebClient/README.md", "WebClient/screenshot.png"],
+            resources: [
+                // An explicit list keeps Git metadata and upstream development files
+                // out of the application, without editing the submodule.
+                .copy("WebClient/index.html"),
+                .copy("WebClient/index.js"),
+                .copy("WebClient/pico.classless.min.css"),
+                .copy("WebClient/mouse.png"),
+                .copy("WebClient/icon.png"),
+                .copy("WebClient/apple-touch-icon.png"),
+                .copy("WebClient/favicon.ico"),
+                .copy("WebClient/manifest.json"),
+                .copy("WebClient/service-worker.js"),
+                .copy("WebClient/LICENSE"),
+                .copy("NativeAdapter.js"),
+            ]
         ),
     ]
 )

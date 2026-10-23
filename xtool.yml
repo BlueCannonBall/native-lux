@@ -1,4 +1,4 @@
 version: 1
-bundleID: com.example.native-lux
-name: "Lux Client"
-iconPath: Sources/native_lux/lux/apple-touch-icon.png
+bundleID: com.optimal.lux
+iconPath: Sources/native_lux/WebClient/apple-touch-icon.png
+infoPath: Info.plist

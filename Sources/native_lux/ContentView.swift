@@ -1,457 +1,351 @@
-import SwiftUI
-import GameController
-#if canImport(WebKit)
-import WebKit
-#endif
-
-// Optional UIKit import for iOS
-#if canImport(UIKit)
 import UIKit
-#endif
+@preconcurrency import GameController
+@preconcurrency import WebKit
 
-// MARK: - SwiftUI View
+/// Only native responsibilities: WebKit hosting, UIKit capture, raw input, and
+/// the cursor's latency-sensitive rendering. Lux owns credentials and networking.
+@MainActor
+final class WebViewController: UIViewController, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate,
+    UIGestureRecognizerDelegate
+{
+    private let url: URL
+    private let adapter: String
+    private var webView: WKWebView!
+    private var cursor: UIImageView!
+    private var position: CGPoint?
+    private var viewportSize = CGSize.zero
+    private var mouse: GCMouse?
+    private var ready = false
+    private var requested = false
+    private var capturing = false
+    private var clientSideMouse = false
+    private var sensitivity: CGFloat = 1.5
+    private var interrupted = false
+    private var documentID: String?
+    private var documentArgument = "null"
+    private var sequence = 0
+    private var lastState: [Bool] = []
+    private var lockMonitor: Timer?
+    private var alertCompletion: CheckedContinuation<Void, Never>?
+    private weak var javaScriptAlert: UIAlertController?
 
-struct ContentView: View {
-    var body: some View {
-        if let url = Bundle.module.url(forResource: "index", withExtension: "html", subdirectory: "lux") {
-            WebViewWrapper(url: url)
-                .edgesIgnoringSafeArea(.bottom)
-        } else if let url = Bundle.main.url(forResource: "index", withExtension: "html", subdirectory: "lux") {
-            WebViewWrapper(url: url)
-                .edgesIgnoringSafeArea(.bottom)
-        } else {
-            Text("Could not find lux/index.html")
-        }
-    }
-}
-
-// MARK: - macOS Implementation
-
-#if os(macOS)
-struct WebViewWrapper: NSViewControllerRepresentable {
-    let url: URL
-    func makeNSViewController(context: Context) -> WebViewController {
-        return WebViewController(url: url)
-    }
-    func updateNSViewController(_ nsViewController: WebViewController, context: Context) {
-    }
-}
-
-class WebViewController: NSViewController, WKScriptMessageHandler {
-    var webView: WKWebView!
-    var url: URL
-
-    init(url: URL) {
+    init(url: URL, adapter: String) {
         self.url = url
+        self.adapter = adapter
         super.init(nibName: nil, bundle: nil)
     }
 
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override var prefersStatusBarHidden: Bool { false }
+    override var prefersHomeIndicatorAutoHidden: Bool { true }
+    override var prefersPointerLocked: Bool { requested && ready && mouse != nil }
 
-    override func loadView() {
-        let config = WKWebViewConfiguration()
-        let prefs = WKWebpagePreferences()
-        prefs.allowsContentJavaScript = true
-        config.defaultWebpagePreferences = prefs
-        
-        let userContentController = WKUserContentController()
-        userContentController.add(self, name: "pointerLock")
-        config.userContentController = userContentController
-        
-        webView = WKWebView(frame: .zero, configuration: config)
-        webView.configuration.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
-        view = webView
-    }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
-    }
-
-    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        if message.name == "pointerLock", let body = message.body as? String, body == "lock" {
-            // macOS pointer lock is natively supported by WebKit usually, so this is just a placeholder.
-        }
-    }
-}
-
-// MARK: - iOS / iPadOS Implementation
-
-#else
-struct WebViewWrapper: UIViewControllerRepresentable {
-    let url: URL
-    func makeUIViewController(context: Context) -> WebViewController {
-        return WebViewController(url: url)
-    }
-    func updateUIViewController(_ uiViewController: WebViewController, context: Context) {
-    }
-}
-
-class TouchDownGestureRecognizer: UIGestureRecognizer {
-    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
-        super.touchesBegan(touches, with: event)
-        if state == .possible {
-            state = .recognized
-        }
-    }
-}
-
-class WebViewController: UIViewController, WKScriptMessageHandler, UIGestureRecognizerDelegate {
-    static var globalIsPointerLocked = false
-    static var hasSwizzled = false
-
-    var webView: WKWebView!
-    var url: URL
-    
-    var isPointerLocked = false {
-        didSet {
-            if isPointerLocked {
-                lockedAt = Date()
-            }
-            WebViewController.globalIsPointerLocked = isPointerLocked
-            updatePointerLockState()
-        }
-    }
-    
-    var lockedAt: Date?
-    
-    var isReadyForPointerLock = false
-    var isClientSideMouse = false
-    var storedMouseSensitivity: CGFloat = 1.5
-    
-    var cursorView: UIImageView?
-    var virtualMouseX: CGFloat = 0
-    var virtualMouseY: CGFloat = 0
-    
-    var displayLink: CADisplayLink?
-    
-    init(url: URL) {
-        self.url = url
-        super.init(nibName: nil, bundle: nil)
-    }
-    
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-    
-    override func loadView() {
-        let config = WKWebViewConfiguration()
-        config.allowsInlineMediaPlayback = true
-        let prefs = WKWebpagePreferences()
-        prefs.allowsContentJavaScript = true
-        config.defaultWebpagePreferences = prefs
-        
-        let userContentController = WKUserContentController()
-        userContentController.add(self, name: "pointerLock")
-        config.userContentController = userContentController
-        
-        webView = WKWebView(frame: .zero, configuration: config)
-        webView.configuration.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
-        webView.scrollView.isScrollEnabled = false
-        if #available(iOS 11.0, *) {
-            webView.scrollView.contentInsetAdjustmentBehavior = .never
-        }
-        view = webView
-    }
-    
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        
-        if !WebViewController.hasSwizzled {
-            WebViewController.hasSwizzled = true
-            let original = #selector(getter: UIViewController.prefersPointerLocked)
-            let swizzled = #selector(getter: UIViewController.lux_prefersPointerLocked)
-            if let originalMethod = class_getInstanceMethod(UIViewController.self, original),
-               let swizzledMethod = class_getInstanceMethod(UIViewController.self, swizzled) {
-                method_exchangeImplementations(originalMethod, swizzledMethod)
-            }
-        }
-        
-        webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
-        
-        // Native cursor overlay — renders on top of WKWebView with zero IPC latency
-        if let mouseURL = Bundle.module.url(forResource: "mouse", withExtension: "png", subdirectory: "lux"),
-           let mouseData = try? Data(contentsOf: mouseURL),
-           let mouseImage = UIImage(data: mouseData) {
-            let scale: CGFloat = 40.0
-            let cursorSize = CGSize(width: mouseImage.size.width / scale, height: mouseImage.size.height / scale)
-            let imageView = UIImageView(image: mouseImage)
-            imageView.frame = CGRect(origin: .zero, size: cursorSize)
-            imageView.isHidden = true
-            imageView.isUserInteractionEnabled = false
-            imageView.layer.shadowColor = UIColor.black.cgColor
-            imageView.layer.shadowOpacity = 0.3
-            imageView.layer.shadowOffset = CGSize(width: 1.5, height: 1.5)
-            imageView.layer.shadowRadius = 2.5
-            view.addSubview(imageView)
-            self.cursorView = imageView
-        }
-        
-        // 1. Scroll tracking via explicit UIKit Pan (since GCMouse misses iPadOS trackpad scrolls)
-        if #available(iOS 13.4, *) {
-            let scrollGesture = UIPanGestureRecognizer(target: self, action: #selector(handleScroll(_:)))
-            scrollGesture.allowedScrollTypesMask = .all
-            scrollGesture.allowedTouchTypes = [] // Important: Only capture scrolls, not touches!
-            scrollGesture.cancelsTouchesInView = false
-            scrollGesture.delegate = self
-            view.addGestureRecognizer(scrollGesture)
-        }
-        
-        // 2. Sink gesture to absorb generic touches while locked (kills WebKit context menus)
-        let sinkGesture = UILongPressGestureRecognizer(target: nil, action: nil)
-        sinkGesture.minimumPressDuration = 0
-        sinkGesture.cancelsTouchesInView = true
-        sinkGesture.delegate = self
-        view.addGestureRecognizer(sinkGesture)
-        
-        let relockGesture = TouchDownGestureRecognizer(target: self, action: #selector(handleRelockTap))
-        relockGesture.cancelsTouchesInView = false
-        relockGesture.delegate = self
-        view.addGestureRecognizer(relockGesture)
-        
-        // 3. Pointer capture via GameController for raw trackpad accuracy
-        if #available(iOS 14.0, *) {
-            NotificationCenter.default.addObserver(self, selector: #selector(mouseDidConnect(_:)), name: .GCMouseDidConnect, object: nil)
-            NotificationCenter.default.addObserver(self, selector: #selector(pointerLockStateDidChange(_:)), name: UIPointerLockState.didChangeNotification, object: nil)
-            if let mouse = GCMouse.current {
-                setupMouse(mouse)
-            } else if let mouse = GCMouse.mice().first {
-                setupMouse(mouse)
-            }
-        }
-        
-        displayLink = CADisplayLink(target: self, selector: #selector(displayLinkFired))
-        displayLink?.add(to: .main, forMode: .common)
-    }
-    
     override var keyCommands: [UIKeyCommand]? {
-        return [
-            UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(handleEscapeKey))
-        ]
+        guard requested else { return nil }
+        let command = UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escape))
+        command.wantsPriorityOverSystemBehavior = true
+        return [command]
     }
-    
-    @objc func handleEscapeKey() {
-        if isPointerLocked {
-            isPointerLocked = false
-            let js = "window.nativeIsPointerLocked = false; if (window.nativeSendEscape) { window.nativeSendEscape(); }"
-            webView.evaluateJavaScript(js, completionHandler: nil)
+
+    override func loadView() {
+        let configuration = WKWebViewConfiguration()
+        configuration.allowsInlineMediaPlayback = true
+        configuration.mediaTypesRequiringUserActionForPlayback = []
+        configuration.userContentController.add(WeakScriptMessageHandler(self), name: "nativeLux")
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: adapter, injectionTime: .atDocumentStart, forMainFrameOnly: true
+        ))
+        webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.navigationDelegate = self
+        webView.uiDelegate = self
+        webView.scrollView.isScrollEnabled = false
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
+        #if DEBUG
+        webView.isInspectable = true
+        #endif
+        view = webView
+        cursor = UIImageView(image: Bundle.module.url(forResource: "mouse", withExtension: "png")
+            .flatMap { UIImage(contentsOfFile: $0.path) })
+        cursor.bounds.size = CGSize(width: (cursor.image?.size.width ?? 0) / 40, height: (cursor.image?.size.height ?? 0) / 40)
+        cursor.isUserInteractionEnabled = false
+        cursor.isHidden = true
+        cursor.layer.shadowColor = UIColor.black.cgColor
+        cursor.layer.shadowOpacity = 0.3
+        cursor.layer.shadowOffset = CGSize(width: 1.5, height: 1.5)
+        cursor.layer.shadowRadius = 2.5
+        view.addSubview(cursor)
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        let scroll = UIPanGestureRecognizer(target: self, action: #selector(scroll(_:)))
+        scroll.allowedScrollTypesMask = .all
+        scroll.allowedTouchTypes = []
+        scroll.cancelsTouchesInView = false
+        scroll.delegate = self
+        view.addGestureRecognizer(scroll)
+        let clicks = UILongPressGestureRecognizer(target: nil, action: nil)
+        clicks.minimumPressDuration = 0
+        clicks.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
+        clicks.delaysTouchesBegan = true
+        clicks.delegate = self
+        view.addGestureRecognizer(clicks)
+        for name in [Notification.Name.GCMouseDidConnect, .GCMouseDidDisconnect, .GCMouseDidBecomeCurrent] {
+            NotificationCenter.default.addObserver(self, selector: #selector(mouseChanged(_:)), name: name, object: nil)
+        }
+        NotificationCenter.default.addObserver(self, selector: #selector(lockChanged),
+            name: UIPointerLockState.didChangeNotification, object: nil)
+        selectMouse(GCMouse.current ?? GCMouse.mice().first)
+        webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        synchronize()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        guard viewportSize != view.bounds.size else { return }
+        viewportSize = view.bounds.size
+        input("layout", "0,0")
+        if capturing && clientSideMouse { updateCursor() }
+    }
+
+    func sceneActivityChanged(active: Bool) {
+        interrupted = !active
+        synchronize()
+        if !active { input("reset", "0,0") }
+    }
+
+    @objc private func escape() { release(escape: true) }
+    @objc private func lockChanged() { synchronize() }
+
+    private func release(escape: Bool = false) {
+        let sendEscape = escape && requested
+        requested = false
+        setNeedsUpdateOfPrefersPointerLocked()
+        synchronize(force: true, escape: sendEscape)
+    }
+
+    private func synchronize(force: Bool = false, escape: Bool = false) {
+        let scene = viewIfLoaded?.window?.windowScene
+        let lock = scene?.pointerLockState
+        let active = !interrupted && scene?.activationState == .foregroundActive && presentedViewController == nil
+        let state = [requested, lock?.isLocked == true, active, mouse != nil, lock != nil]
+        let wasCapturing = capturing
+        capturing = ready && state.allSatisfy { $0 }
+        cursor?.isHidden = !(capturing && clientSideMouse)
+        if force || state != lastState {
+            lastState = state
+            send("state(\(documentArgument),{requested:\(requested),locked:\(state[1]),active:\(active),mouse:\(state[3]),supported:\(state[4]),sequence:\(sequence),escape:\(escape)})")
+            if capturing && !wasCapturing {
+                webView.becomeFirstResponder()
+                if clientSideMouse { updateCursor() }
+            }
+        }
+        // This timer only checks capture state if a UIKit notification is missed.
+        // It never schedules, batches, or forwards mouse movement.
+        if requested && lockMonitor == nil {
+            let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.synchronize() }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            lockMonitor = timer
+        } else if !requested {
+            lockMonitor?.invalidate()
+            lockMonitor = nil
         }
     }
 
-    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        if gestureRecognizer is TouchDownGestureRecognizer {
-            return true
-        }
-        return isPointerLocked
+    private func send(_ call: String) {
+        guard documentID != nil else { return }
+        // April's immediate submission path: no frame tick, application queue,
+        // per-event JSON encoder, or completion-handler serialization.
+        webView.evaluateJavaScript("window.nativeLux?.\(call);", completionHandler: nil)
     }
 
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        return true
-    }
-    
-    @objc func handleRelockTap() {
-        if isReadyForPointerLock && !isPointerLocked {
-            isPointerLocked = true
-        }
-    }
-    
-    @objc func handleScroll(_ gesture: UIPanGestureRecognizer) {
-        guard isPointerLocked else { return }
-        if gesture.state == .changed || gesture.state == .ended {
-            let translation = gesture.translation(in: view)
-            gesture.setTranslation(.zero, in: view)
-            
-            let dx = -translation.x
-            let dy = -translation.y
-            if dx != 0 || dy != 0 {
-                let js = "if (window.nativeWheel) { window.nativeWheel(\(dx), \(dy)); }"
-                webView.evaluateJavaScript(js, completionHandler: nil)
-            }
-        }
-    }
-    
-    @objc func displayLinkFired() {
-        guard isPointerLocked else { return }
-        
-        if #available(iOS 14.0, *) {
-            var isAnySceneLocked = false
-            for scene in UIApplication.shared.connectedScenes {
-                if let windowScene = scene as? UIWindowScene, let state = windowScene.pointerLockState {
-                    if state.isLocked {
-                        isAnySceneLocked = true
-                        break
-                    }
-                }
-            }
-            if !isAnySceneLocked && isPointerLocked {
-                if let lockedAt = lockedAt, Date().timeIntervalSince(lockedAt) > 0.5 {
-                    // The system forced an unlock, and we didn't catch it via notification
-                    isPointerLocked = false
-                    let fallbackJs = "window.nativeIsPointerLocked = false; if (window.nativeSendEscape) { window.nativeSendEscape(); }"
-                    webView.evaluateJavaScript(fallbackJs, completionHandler: nil)
-                }
-            }
-        }
-    }
-    
-    @available(iOS 14.0, *)
-    @objc func mouseDidConnect(_ notification: Notification) {
-        guard let mouse = notification.object as? GCMouse else { return }
-        setupMouse(mouse)
+    private func input(_ type: String, _ arguments: String) {
+        send("input(\(documentArgument),'\(type)',\(arguments))")
     }
 
-    @available(iOS 14.0, *)
-    @objc func pointerLockStateDidChange(_ notification: Notification) {
-        let state: UIPointerLockState?
-        if let scene = notification.object as? UIScene {
-            state = scene.pointerLockState
-        } else if let scene = view.window?.windowScene {
-            state = scene.pointerLockState
-        } else {
-            return
-        }
-        
-        if let state = state, !state.isLocked && isPointerLocked {
-            // The system forced an unlock (e.g. user pressed ESC)
-            isPointerLocked = false
-            let js = "window.nativeIsPointerLocked = false; if (window.nativeSendEscape) { window.nativeSendEscape(); }"
-            webView.evaluateJavaScript(js, completionHandler: nil)
-        }
+    @objc private func mouseChanged(_ notification: Notification) {
+        let removed = notification.name == .GCMouseDidDisconnect ? notification.object as? GCMouse : nil
+        let mice = GCMouse.mice().filter { $0 !== removed }
+        let current = GCMouse.current.flatMap { current in mice.first { $0 === current } }
+        selectMouse(current ?? mice.first)
     }
 
-    @available(iOS 14.0, *)
-    func setupMouse(_ mouse: GCMouse) {
-        guard let mouseInput = mouse.mouseInput else { return }
-        
-        mouseInput.mouseMovedHandler = { [weak self] (input: GCMouseInput, deltaX: Float, deltaY: Float) in
-            guard let self = self, self.isPointerLocked else { return }
-            
-            // Update native cursor overlay immediately (zero latency)
-            if self.isClientSideMouse, let cursorView = self.cursorView {
-                let dx = CGFloat(deltaX) * self.storedMouseSensitivity
-                let dy = CGFloat(-deltaY) * self.storedMouseSensitivity
-                self.virtualMouseX = min(max(self.virtualMouseX + dx, 0), self.view.bounds.width - 1)
-                self.virtualMouseY = min(max(self.virtualMouseY + dy, 0), self.view.bounds.height - 1)
-                // Snap to pixel grid to avoid sub-pixel anti-aliasing shimmer
-                let scale = self.view.window?.screen.scale ?? UIScreen.main.scale
-                let snappedX = round(self.virtualMouseX * scale) / scale
-                let snappedY = round(self.virtualMouseY * scale) / scale
-                CATransaction.begin()
-                CATransaction.setDisableActions(true)
-                cursorView.layer.position = CGPoint(x: snappedX + cursorView.bounds.width / 2, y: snappedY + cursorView.bounds.height / 2)
-                CATransaction.commit()
-                CATransaction.flush()
-            }
-            
-            // Sync to JS for server forwarding (latency here is fine — not on visual critical path)
-            // GameController Y is mathematically inverted from web coordinates (Positive is Up natively vs Positive is Down in browser)
-            if self.isClientSideMouse {
-                let js = "if (window.nativeMouseMoveAbs) { window.nativeMouseMoveAbs(\(self.virtualMouseX), \(self.virtualMouseY)); }"
-                self.webView.evaluateJavaScript(js, completionHandler: nil)
-            } else {
-                let js = "if (window.nativeMouseMove) { window.nativeMouseMove(\(deltaX), \(-deltaY)); }"
-                self.webView.evaluateJavaScript(js, completionHandler: nil)
-            }
+    private func selectMouse(_ next: GCMouse?) {
+        guard mouse !== next else { return }
+        if let old = mouse?.mouseInput {
+            old.mouseMovedHandler = nil
+            ([old.leftButton] + [old.rightButton, old.middleButton].compactMap { $0 } + (old.auxiliaryButtons ?? []))
+                .forEach { $0.pressedChangedHandler = nil }
         }
-        
-        mouseInput.leftButton.pressedChangedHandler = { [weak self] (button: GCControllerButtonInput, value: Float, pressed: Bool) in
-            guard let self = self, self.isPointerLocked else { return }
-            let js = "if (window.nativeMouseDown) { window.nativeMouse\(pressed ? "Down" : "Up")(0); }"
-            self.webView.evaluateJavaScript(js, completionHandler: nil)
-        }
-        
-        mouseInput.rightButton?.pressedChangedHandler = { [weak self] (button: GCControllerButtonInput, value: Float, pressed: Bool) in
-            guard let self = self, self.isPointerLocked else { return }
-            let js = "if (window.nativeMouseDown) { window.nativeMouse\(pressed ? "Down" : "Up")(2); }"
-            self.webView.evaluateJavaScript(js, completionHandler: nil)
-        }
-        
-        mouseInput.middleButton?.pressedChangedHandler = { [weak self] (button: GCControllerButtonInput, value: Float, pressed: Bool) in
-            guard let self = self, self.isPointerLocked else { return }
-            let js = "if (window.nativeMouseDown) { window.nativeMouse\(pressed ? "Down" : "Up")(1); }"
-            self.webView.evaluateJavaScript(js, completionHandler: nil)
-        }
-    }
-    
-    @available(iOS 14.0, *)
-    func clearMouse(_ mouse: GCMouse) {
-        guard let mouseInput = mouse.mouseInput else { return }
-        mouseInput.mouseMovedHandler = nil
-        mouseInput.leftButton.pressedChangedHandler = nil
-        mouseInput.rightButton?.pressedChangedHandler = nil
-        mouseInput.middleButton?.pressedChangedHandler = nil
-    }
-    
-    override var prefersPointerLocked: Bool {
-        return isPointerLocked
-    }
-
-    func updatePointerLockState() {
-        if #available(iOS 14.0, *) {
-            self.setNeedsUpdateOfPrefersPointerLocked()
-            
-            let js = "window.nativeIsPointerLocked = \(isPointerLocked ? "true" : "false");"
-            webView.evaluateJavaScript(js, completionHandler: nil)
-            
-            if isPointerLocked {
-                if isClientSideMouse {
-                    virtualMouseX = view.bounds.width / 2
-                    virtualMouseY = view.bounds.height / 2
-                    cursorView?.frame.origin = CGPoint(x: virtualMouseX, y: virtualMouseY)
-                    cursorView?.isHidden = false
-                }
-                if let mouse = GCMouse.current {
-                    setupMouse(mouse)
-                } else if let mouse = GCMouse.mice().first {
-                    setupMouse(mouse)
-                }
-            } else {
-                cursorView?.isHidden = true
-                if let mouse = GCMouse.current {
-                    clearMouse(mouse)
-                } else if let mouse = GCMouse.mice().first {
-                    clearMouse(mouse)
+        input("reset", "0,0")
+        mouse = next?.mouseInput == nil ? nil : next
+        if let next = mouse, let profile = next.mouseInput {
+            next.handlerQueue = .main
+            profile.mouseMovedHandler = { [weak self, weak next] _, x, y in
+                MainActor.assumeIsolated {
+                    guard let self, let next, self.mouse === next, self.capturing, x.isFinite, y.isFinite else { return }
+                    if self.clientSideMouse {
+                        var point = self.position ?? CGPoint(x: self.view.bounds.midX, y: self.view.bounds.midY)
+                        point.x += CGFloat(x) * self.sensitivity
+                        point.y -= CGFloat(y) * self.sensitivity
+                        self.position = point
+                        self.updateCursor()
+                    } else { self.input("relative", "\(x),\(-y)") }
                 }
             }
-            
-            for scene in UIApplication.shared.connectedScenes {
-                if let windowScene = scene as? UIWindowScene, windowScene.activationState == .foregroundActive {
-                    for window in windowScene.windows {
-                        window.rootViewController?.setNeedsUpdateOfPrefersPointerLocked()
+            var buttons = [(profile.leftButton, 0)]
+            if let button = profile.rightButton { buttons.append((button, 2)) }
+            if let button = profile.middleButton { buttons.append((button, 1)) }
+            for (index, button) in (profile.auxiliaryButtons ?? []).prefix(2).enumerated() { buttons.append((button, index + 3)) }
+            for (button, number) in buttons {
+                button.pressedChangedHandler = { [weak self, weak next] _, _, pressed in
+                    MainActor.assumeIsolated {
+                        guard let self, let next, self.mouse === next else { return }
+                        // Identify the activation click from GameController, not
+                        // WebKit's potentially touch-labeled compatibility event.
+                        if !self.requested && self.ready && pressed && number == 0,
+                            self.view.window?.windowScene?.pointerLockState != nil
+                        {
+                            self.requested = true
+                            self.setNeedsUpdateOfPrefersPointerLocked()
+                            self.synchronize(force: true)
+                            return
+                        }
+                        guard self.capturing else { return }
+                        self.input("button", "\(number),\(pressed)")
                     }
                 }
             }
         }
+        setNeedsUpdateOfPrefersPointerLocked()
+        synchronize()
     }
-    
-    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        if message.name == "pointerLock", let body = message.body as? String {
-            if body == "lock" {
-                isPointerLocked = true
-            } else if body == "unlock" {
-                isPointerLocked = false
-            } else if body == "ready" {
-                isReadyForPointerLock = true
-            } else if body.hasPrefix("csm:") {
-                // Client-side mouse config: "csm:<sensitivity>"
-                isClientSideMouse = true
-                let sensitivityStr = String(body.dropFirst("csm:".count))
-                storedMouseSensitivity = CGFloat(Double(sensitivityStr) ?? 1.5)
-                // Tell JS to skip canvas cursor drawing — native overlay handles it
-                webView.evaluateJavaScript("window.nativeCursorOverlay = true;", completionHandler: nil)
-            }
+
+    private func updateCursor() {
+        var point = position ?? CGPoint(x: view.bounds.midX, y: view.bounds.midY)
+        point.x = min(max(point.x, 0), max(view.bounds.width - 1, 0))
+        point.y = min(max(point.y, 0), max(view.bounds.height - 1, 0))
+        position = point
+        let scale = view.window?.screen.scale ?? 2
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        cursor.layer.position = CGPoint(x: (point.x * scale).rounded() / scale + cursor.bounds.width / 2,
+            y: (point.y * scale).rounded() / scale + cursor.bounds.height / 2)
+        CATransaction.commit()
+        CATransaction.flush() // Preserve April's explicitly flushed native cursor.
+        input("absolute", "\(point.x),\(point.y)")
+    }
+
+    @objc private func scroll(_ gesture: UIPanGestureRecognizer) {
+        guard capturing, gesture.state == .changed || gesture.state == .ended else { return }
+        let delta = gesture.translation(in: view)
+        gesture.setTranslation(.zero, in: view)
+        input("wheel", "\(-delta.x),\(-delta.y)")
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool { capturing }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "nativeLux", message.frameInfo.isMainFrame, isBundled(message.frameInfo.request.url),
+            let body = message.body as? [String: Any], body["version"] as? Int == 1,
+            let id = body["documentID"] as? String, id.count <= 128,
+            let nextSequence = body["sequence"] as? Int, nextSequence > 0,
+            let type = body["type"] as? String
+        else { return }
+        if type == "loaded" {
+            reset()
+            documentID = id
+            documentArgument = String(decoding: (try? JSONEncoder().encode(id)) ?? Data("null".utf8), as: UTF8.self)
         }
+        guard id == documentID, nextSequence > sequence else { return }
+        sequence = nextSequence
+        switch type {
+        case "configure":
+            requested = false
+            ready = body["ready"] as? Bool == true
+            clientSideMouse = body["clientSideMouse"] as? Bool == true
+            let value = body["sensitivity"] as? Double ?? 1.5
+            sensitivity = value.isFinite ? CGFloat(min(2.9, max(0.1, value))) : 1.5
+            position = nil
+        case "capture": requested = ready
+        case "release": release(escape: body["escape"] as? Bool == true); return
+        default: break
+        }
+        setNeedsUpdateOfPrefersPointerLocked()
+        synchronize(force: true)
+    }
+
+    private func isBundled(_ candidate: URL?) -> Bool {
+        candidate?.isFileURL == true && candidate?.standardizedFileURL.path == url.standardizedFileURL.path
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
+        guard action.targetFrame?.isMainFrame == true else { return .cancel }
+        if isBundled(action.request.url) { return .allow }
+        // Upstream's file-origin error recovery produces a relative "null/..." URL.
+        let recovery = URL(string: "null" + url.path, relativeTo: url)?.absoluteURL
+        if action.request.url?.standardizedFileURL == recovery?.standardizedFileURL {
+            webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+        }
+        return .cancel
+    }
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) { reset() }
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { reset(); webView.reload() }
+
+    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo) async {
+        guard frame.isMainFrame, isBundled(frame.request.url), presentedViewController == nil else { return }
+        await withCheckedContinuation { continuation in
+            let alert = UIAlertController(title: "Lux", message: message, preferredStyle: .alert)
+            alertCompletion = continuation
+            javaScriptAlert = alert
+            alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self] _ in self?.finishAlert() })
+            present(alert, animated: true)
+            synchronize()
+        }
+    }
+
+    private func finishAlert() {
+        let completion = alertCompletion
+        alertCompletion = nil
+        javaScriptAlert = nil
+        completion?.resume()
+    }
+
+    private func reset() {
+        javaScriptAlert?.dismiss(animated: false)
+        finishAlert()
+        ready = false
+        release()
+        documentID = nil
+        documentArgument = "null"
+        sequence = 0
+        lastState = []
+        position = nil
+    }
+
+    func cleanup() {
+        reset()
+        NotificationCenter.default.removeObserver(self)
+        selectMouse(nil)
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "nativeLux")
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
     }
 }
 
-extension UIViewController {
-    @objc var lux_prefersPointerLocked: Bool {
-        if WebViewController.globalIsPointerLocked {
-            return true
-        }
-        return self.lux_prefersPointerLocked
+@MainActor
+private final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
+    weak var delegate: WKScriptMessageHandler?
+    init(_ delegate: WKScriptMessageHandler) { self.delegate = delegate }
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        delegate?.userContentController(controller, didReceive: message)
     }
 }
-#endif

@@ -8,3 +8,6 @@ DerivedData/
 .netrc
 
 /xtool
+/.bsp/
+/node_modules/
+/test-results/

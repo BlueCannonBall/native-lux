@@ -1,0 +1,17 @@
+{
+  "name": "native-lux-tests",
+  "private": true,
+  "description": "Regression tests for the native-lux iPadOS wrapper",
+  "license": "GPL-3.0-or-later",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test Tests/*.test.cjs",
+    "test:browser": "node --test Tests/browser/*.test.cjs",
+    "test:bundle": "node Scripts/verify-bundle.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.64.1"
+  }
+}
